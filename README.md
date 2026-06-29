@@ -101,6 +101,21 @@ PM2 is included in this project, so you do not need a global install.
    npm run pm2:stop
    ```
 
+## Deploy On Render
+
+This project includes a `render.yaml` for a Node background worker.
+
+1. Push this repo to GitHub.
+2. In Render, click **New +** -> **Blueprint** and select your repository.
+3. Confirm it creates the `sewers-bot` worker from `render.yaml`.
+4. Set `DISCORD_TOKEN` in Render environment variables.
+5. Deploy.
+
+Notes:
+
+- Use a **Worker** service (not Web Service) because the bot does not serve HTTP.
+- Render restarts workers automatically if the process exits.
+
 ## Notes
 
 - YouTube streaming can break when YouTube changes internals. If playback fails, update dependencies first:

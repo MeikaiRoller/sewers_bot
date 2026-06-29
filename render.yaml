@@ -1,0 +1,19 @@
+services:
+  - type: worker
+    name: sewers-bot
+    env: node
+    plan: free
+    buildCommand: npm ci
+    startCommand: npm start
+    autoDeploy: true
+    envVars:
+      - key: DISCORD_TOKEN
+        sync: false
+      - key: PREFIX
+        value: "!"
+      - key: YTDLP_AUTO_UPDATE_HOURS
+        value: "24"
+      - key: STREAM_RETRY_COUNT
+        value: "2"
+      - key: HEALTHCHECK_VIDEO_ID
+        value: "dQw4w9WgXcQ"
