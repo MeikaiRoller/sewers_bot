@@ -1,0 +1,36 @@
+{
+  "name": "sewers-bot",
+  "version": "1.0.0",
+  "description": "Discord music bot with YouTube link playback",
+  "main": "src/index.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "nodemon src/index.js",
+    "pm2:start": "npx pm2 start ecosystem.config.cjs --only sewers-bot",
+    "pm2:stop": "npx pm2 stop sewers-bot",
+    "pm2:restart": "npx pm2 restart sewers-bot",
+    "pm2:logs": "npx pm2 logs sewers-bot"
+  },
+  "keywords": [
+    "discord",
+    "music",
+    "youtube",
+    "bot"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "@discordjs/voice": "^0.19.2",
+    "discord.js": "^14.16.3",
+    "dotenv": "^16.4.5",
+    "ffmpeg-static": "^5.2.0",
+    "opusscript": "^0.0.8",
+    "play-dl": "^1.9.7",
+    "yt-dlp-wrap": "^2.3.12"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.4",
+    "pm2": "^7.0.1"
+  }
+}
