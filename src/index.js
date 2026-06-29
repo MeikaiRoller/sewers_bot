@@ -21,7 +21,6 @@ const {
   entersState,
   joinVoiceChannel,
 } = require("@discordjs/voice");
-const play = require("play-dl");
 const YTDlpWrap = require("yt-dlp-wrap").default;
 const ffmpegPath = require("ffmpeg-static");
 
@@ -606,15 +605,30 @@ async function ensureVoiceConnectionReady(queue) {
 }
 
 async function resolveSong(url, requestedBy) {
-  const info = await play.video_info(url);
-  const details = info.video_details;
-  const resolvedUrl = details.url || (details.id ? `https://www.youtube.com/watch?v=${details.id}` : url);
+  await ensureYtDlpReady();
+  const output = await ytDlp.execPromise([
+    "--no-warnings",
+    "--no-playlist",
+    "--dump-single-json",
+    url,
+  ]);
+
+  const details = JSON.parse(String(output));
+  const resolvedUrl =
+    details.webpage_url ||
+    (details.id ? `https://www.youtube.com/watch?v=${details.id}` : url);
+
+  const durationSeconds = Number.parseInt(details.duration || "0", 10);
+  const duration =
+    durationSeconds > 0
+      ? new Date(durationSeconds * 1000).toISOString().slice(11, 19).replace(/^00:/, "")
+      : "Live";
 
   return {
-    title: details.title,
+    title: details.title || "Unknown title",
     url: resolvedUrl,
-    duration: details.durationRaw || "Live",
-    thumbnail: details.thumbnails?.[0]?.url || null,
+    duration,
+    thumbnail: details.thumbnail || null,
     requestedBy,
   };
 }

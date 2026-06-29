@@ -121,5 +121,5 @@ Notes:
 - YouTube streaming can break when YouTube changes internals. If playback fails, update dependencies first:
 
   ```bash
-  npm update play-dl
+   npm update yt-dlp-wrap
   ```
