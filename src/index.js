@@ -36,6 +36,7 @@ const ytDlpStatePath = path.join(__dirname, "..", ".cache", "yt-dlp-state.json")
 const ytDlpAutoUpdateHours = Number.parseInt(process.env.YTDLP_AUTO_UPDATE_HOURS || "24", 10);
 const streamRetryCount = Number.parseInt(process.env.STREAM_RETRY_COUNT || "2", 10);
 const healthcheckVideoId = process.env.HEALTHCHECK_VIDEO_ID || "dQw4w9WgXcQ";
+const commandDedupeDelayMs = Number.parseInt(process.env.COMMAND_DEDUPE_DELAY_MS || "450", 10);
 const idleTimeoutMs = 5 * 60 * 1000;
 
 let hasInstanceLock = false;
@@ -50,6 +51,13 @@ function toPositiveInt(value, fallback) {
 
 const safeYtDlpAutoUpdateHours = toPositiveInt(ytDlpAutoUpdateHours, 24);
 const safeStreamRetryCount = toPositiveInt(streamRetryCount, 2);
+const safeCommandDedupeDelayMs = toPositiveInt(commandDedupeDelayMs, 450);
+
+function sleep(ms) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
 
 function isProcessAlive(pid) {
   if (!Number.isInteger(pid) || pid <= 0) return false;
@@ -383,6 +391,18 @@ async function notifyQueue(queue, content) {
     }
   } catch (error) {
     console.error("Failed to send queue notification:", error);
+  }
+}
+
+async function alreadyHandledByBotReply(message) {
+  try {
+    const recent = await message.channel.messages.fetch({ limit: 15 });
+    return recent.some(
+      (entry) =>
+        entry.author.id === client.user.id && entry.reference?.messageId === message.id
+    );
+  } catch {
+    return false;
   }
 }
 
@@ -777,6 +797,13 @@ client.on(Events.MessageCreate, async (message) => {
   console.log(
     `[CMD] user=${message.author.tag} guild=${message.guild.name} channel=#${message.channel.name} command=${cmd} args="${argsText}"`
   );
+
+  const jitterMs = Math.floor(Math.random() * 150);
+  await sleep(safeCommandDedupeDelayMs + jitterMs);
+  if (await alreadyHandledByBotReply(message)) {
+    console.log(`[CMD] skipped duplicate handling for message=${message.id}`);
+    return;
+  }
 
   if (cmd === "play") {
     const url = rest[0];

@@ -76,6 +76,7 @@ npm run dev
 - `YTDLP_AUTO_UPDATE_HOURS`: `0` disables scheduled yt-dlp updates; default is `24`
 - `STREAM_RETRY_COUNT`: retry attempts after the first failure; default is `2`
 - `HEALTHCHECK_VIDEO_ID`: video id used by `!health` probe
+- `COMMAND_DEDUPE_DELAY_MS`: delay before handling a command so overlapping instances can defer to the first responder; default is `450`
 
 ## PM2 (optional)
 
