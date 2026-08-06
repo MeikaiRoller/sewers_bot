@@ -10,6 +10,9 @@ const {
   GatewayIntentBits,
   EmbedBuilder,
   Events,
+  REST,
+  Routes,
+  SlashCommandBuilder,
 } = require("discord.js");
 const {
   AudioPlayerStatus,
@@ -56,7 +59,7 @@ if (ffmpegPath) {
 }
 
 const token = process.env.DISCORD_TOKEN;
-const prefix = process.env.PREFIX || "!";
+const prefix = process.env.PREFIX && process.env.PREFIX !== "!" ? process.env.PREFIX : "/";
 const instanceLockPath = path.join(dataRoot, ".bot-instance.lock");
 const ytDlpStatePath = path.join(dataRoot, ".cache", "yt-dlp-state.json");
 
@@ -80,6 +83,21 @@ const safeYtDlpAutoUpdateHours = toPositiveInt(ytDlpAutoUpdateHours, 24);
 const safeStreamRetryCount = toPositiveInt(streamRetryCount, 2);
 const safeCommandDedupeDelayMs = toPositiveInt(commandDedupeDelayMs, 450);
 const uiEnabled = process.argv.includes("--ui") || process.env.BOT_UI === "1";
+const slashCommands = [
+  new SlashCommandBuilder()
+    .setName("play")
+    .setDescription("Play a YouTube video in voice chat")
+    .addStringOption((option) =>
+      option.setName("url").setDescription("YouTube video URL").setRequired(true)
+    ),
+  new SlashCommandBuilder().setName("pause").setDescription("Pause playback"),
+  new SlashCommandBuilder().setName("resume").setDescription("Resume playback"),
+  new SlashCommandBuilder().setName("skip").setDescription("Skip the current song"),
+  new SlashCommandBuilder().setName("stop").setDescription("Stop playback and leave the voice channel"),
+  new SlashCommandBuilder().setName("queue").setDescription("Show the current queue"),
+  new SlashCommandBuilder().setName("health").setDescription("Show bot health diagnostics"),
+  new SlashCommandBuilder().setName("help").setDescription("Show available commands"),
+].map((command) => command.toJSON());
 
 function sleep(ms) {
   return new Promise((resolve) => {
@@ -898,15 +916,210 @@ async function sendNowPlaying(message, song) {
   await message.channel.send({ embeds: [embed] });
 }
 
-client.once(Events.ClientReady, () => {
+async function registerSlashCommands() {
+  if (!client.application) {
+    return;
+  }
+
+  try {
+    const rest = new REST({ version: "10" }).setToken(token);
+    const commandRoute = process.env.DISCORD_GUILD_ID
+      ? Routes.applicationGuildCommands(client.user.id, process.env.DISCORD_GUILD_ID)
+      : Routes.applicationCommands(client.user.id);
+
+    await rest.put(commandRoute, { body: slashCommands });
+    console.log(`[SLASH] Registered ${slashCommands.length} slash commands`);
+  } catch (error) {
+    console.error("[SLASH] Failed to register slash commands:", error);
+  }
+}
+
+async function sendContextReply(context, payload) {
+  if (context.interaction) {
+    if (context.interaction.deferred || context.interaction.replied) {
+      return context.interaction.followUp(payload);
+    }
+
+    return context.interaction.reply(payload);
+  }
+
+  return context.message.reply(payload);
+}
+
+client.once(Events.ClientReady, async () => {
   console.log(`Logged in as ${client.user.tag}`);
   setPresence("Starting up", ActivityType.Playing, "idle");
+  await registerSlashCommands();
   startConsoleUi();
   ensureYtDlpReady().catch((error) => {
     console.error("[YTDLP] Failed to prepare yt-dlp binary:", error);
   }).finally(() => {
     setHealthyPresence();
   });
+});
+
+client.on(Events.InteractionCreate, async (interaction) => {
+  if (!interaction.isChatInputCommand()) return;
+
+  const cmd = interaction.commandName.toLowerCase();
+  const argsText = interaction.options.data.map((option) => option.value).join(" ");
+  console.log(
+    `[CMD] user=${interaction.user.tag} guild=${interaction.guild?.name || "DM"} channel=#${interaction.channel?.name || "dm"} command=${cmd} args="${argsText}"`
+  );
+
+  const context = { interaction };
+
+  if (cmd === "play") {
+    const url = interaction.options.getString("url");
+
+    if (!url) {
+      await sendContextReply(context, "Please provide a valid YouTube video URL.");
+      return;
+    }
+
+    if (!isLikelyYouTubeVideoUrl(url)) {
+      await sendContextReply(context, "Please provide a valid YouTube video URL.");
+      return;
+    }
+
+    const voiceChannel = interaction.member?.voice?.channel;
+    if (!voiceChannel) {
+      await sendContextReply(context, "Join a voice channel first.");
+      return;
+    }
+
+    const permissions = voiceChannel.permissionsFor(interaction.client.user);
+    if (!permissions?.has("Connect") || !permissions.has("Speak")) {
+      await sendContextReply(context, "I need permission to connect and speak in your voice channel.");
+      return;
+    }
+
+    let queue = getQueue(interaction.guild.id);
+
+    if (!queue) {
+      queue = createQueue(interaction.guild, voiceChannel);
+    } else if (queue.voiceChannelId !== voiceChannel.id) {
+      await sendContextReply(context, "You must be in the same voice channel as the bot.");
+      return;
+    }
+
+    try {
+      const song = await resolveSong(url, interaction.user.username);
+      queue.textChannelId = interaction.channel.id;
+      queue.songs.push(song);
+      clearIdleTimer(queue);
+
+      const shouldStart = queue.songs.length === 1 && !queue.nowPlaying;
+      if (shouldStart) {
+        await playNext(queue);
+        if (queue.nowPlaying) {
+          await sendNowPlaying(interaction.channel, queue.nowPlaying);
+        }
+      } else {
+        await sendContextReply(context, `Queued: **${song.title}**`);
+      }
+    } catch (error) {
+      console.error("Unable to queue song:", error);
+      await sendContextReply(context, "I couldn't read that YouTube link.");
+    }
+
+    return;
+  }
+
+  if (cmd === "skip") {
+    const queue = getQueue(interaction.guild.id);
+    if (!queue || !queue.songs.length) {
+      await sendContextReply(context, "Nothing is playing right now.");
+      return;
+    }
+
+    stopActiveTranscoder(queue);
+    queue.player.stop(true);
+    await sendContextReply(context, "Skipped.");
+    return;
+  }
+
+  if (cmd === "pause") {
+    const queue = getQueue(interaction.guild.id);
+    if (!queue || !queue.nowPlaying) {
+      await sendContextReply(context, "Nothing is playing right now.");
+      return;
+    }
+
+    const paused = queue.player.pause(true);
+    if (!paused) {
+      await sendContextReply(context, "Playback is already paused.");
+      return;
+    }
+
+    await sendContextReply(context, "Paused.");
+    return;
+  }
+
+  if (cmd === "resume") {
+    const queue = getQueue(interaction.guild.id);
+    if (!queue || !queue.nowPlaying) {
+      await sendContextReply(context, "Nothing is playing right now.");
+      return;
+    }
+
+    const resumed = queue.player.unpause();
+    if (!resumed) {
+      await sendContextReply(context, "Playback is not paused.");
+      return;
+    }
+
+    await sendContextReply(context, "Resumed.");
+    return;
+  }
+
+  if (cmd === "stop") {
+    const queue = getQueue(interaction.guild.id);
+    if (!queue) {
+      await sendContextReply(context, "Nothing to stop.");
+      return;
+    }
+
+    destroyQueue(interaction.guild.id);
+    await sendContextReply(context, "Stopped playback and left the voice channel.");
+    return;
+  }
+
+  if (cmd === "queue") {
+    const queue = getQueue(interaction.guild.id);
+    if (!queue || !queue.songs.length) {
+      await sendContextReply(context, "Queue is empty.");
+      return;
+    }
+
+    const lines = queue.songs.slice(0, 10).map((song, idx) => {
+      const marker = idx === 0 ? "Now" : `${idx}.`;
+      return `${marker} ${song.title}`;
+    });
+
+    await sendContextReply(context, lines.join("\n"));
+    return;
+  }
+
+  if (cmd === "help") {
+    await sendContextReply(context, [
+      "Commands:",
+      "/play <youtube_url>",
+      "/pause",
+      "/resume",
+      "/skip",
+      "/stop",
+      "/queue",
+      "/health",
+      "/help",
+    ].join("\n"));
+    return;
+  }
+
+  if (cmd === "health") {
+    const status = await getHealthStatus(interaction);
+    await sendContextReply(context, `Health:\n${status}`);
+  }
 });
 
 client.on(Events.MessageCreate, async (message) => {
