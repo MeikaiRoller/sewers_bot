@@ -34,7 +34,33 @@ const runtimeRoot = isPackaged
 const dataRoot = isPackaged
   ? path.join(process.env.APPDATA || runtimeRoot, "SewersBot")
   : runtimeRoot;
-const envPath = path.join(runtimeRoot, ".env");
+
+function resolveEnvPath() {
+  const candidates = [];
+
+  if (process.env.DOTENV_PATH) {
+    candidates.push(process.env.DOTENV_PATH);
+  }
+
+  candidates.push(path.join(runtimeRoot, ".env"));
+  candidates.push(path.join(process.cwd(), ".env"));
+  candidates.push(path.join(path.dirname(process.execPath), ".env"));
+  candidates.push(path.join(runtimeRoot, "..", ".env"));
+
+  if (!isPackaged) {
+    candidates.push(path.join(__dirname, "..", ".env"));
+  }
+
+  for (const candidate of candidates) {
+    if (candidate && fs.existsSync(candidate)) {
+      return candidate;
+    }
+  }
+
+  return path.join(runtimeRoot, ".env");
+}
+
+const envPath = resolveEnvPath();
 
 dotenv.config({ path: envPath });
 
@@ -189,7 +215,7 @@ process.on("SIGUSR2", () => {
 });
 
 if (!token) {
-  console.error("Missing DISCORD_TOKEN in .env");
+  console.error(`Missing DISCORD_TOKEN in .env (looked at ${envPath})`);
   process.exit(1);
 }
 
@@ -568,6 +594,59 @@ function isLikelyYouTubeVideoUrl(rawUrl) {
   } catch {
     return false;
   }
+}
+
+function isLikelyYouTubePlaylistUrl(rawUrl) {
+  try {
+    const url = new URL(rawUrl);
+    const host = url.hostname.replace(/^www\./, "").toLowerCase();
+
+    if (host === "youtube.com" || host === "m.youtube.com") {
+      return (
+        (url.pathname === "/playlist" && Boolean(url.searchParams.get("list"))) ||
+        (url.pathname === "/watch" && Boolean(url.searchParams.get("list")))
+      );
+    }
+
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+async function resolvePlaylistSongs(playlistUrl, requestedBy) {
+  await ensureYtDlpReady();
+  const output = await ytDlp.execPromise([
+    "--no-warnings",
+    "--flat-playlist",
+    "--print",
+    "%(id)s",
+    playlistUrl,
+  ]);
+
+  const ids = String(output)
+    .split(/\r?\n/)
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+
+  if (!ids.length) {
+    throw new Error("No videos found in playlist");
+  }
+
+  const songs = [];
+  for (const id of ids) {
+    songs.push(await resolveSong(`https://www.youtube.com/watch?v=${id}`, requestedBy));
+  }
+
+  return songs;
+}
+
+async function resolveRequestedSongs(inputUrl, requestedBy) {
+  if (isLikelyYouTubePlaylistUrl(inputUrl)) {
+    return resolvePlaylistSongs(inputUrl, requestedBy);
+  }
+
+  return [await resolveSong(inputUrl, requestedBy)];
 }
 
 function getQueue(guildId) {
@@ -977,8 +1056,8 @@ client.on(Events.InteractionCreate, async (interaction) => {
       return;
     }
 
-    if (!isLikelyYouTubeVideoUrl(url)) {
-      await sendContextReply(context, "Please provide a valid YouTube video URL.");
+    if (!isLikelyYouTubeVideoUrl(url) && !isLikelyYouTubePlaylistUrl(url)) {
+      await sendContextReply(context, "Please provide a valid YouTube video or playlist URL.");
       return;
     }
 
@@ -1004,19 +1083,23 @@ client.on(Events.InteractionCreate, async (interaction) => {
     }
 
     try {
-      const song = await resolveSong(url, interaction.user.username);
+      const songs = await resolveRequestedSongs(url, interaction.user.username);
       queue.textChannelId = interaction.channel.id;
-      queue.songs.push(song);
+      const wasEmpty = queue.songs.length === 0 && !queue.nowPlaying;
+      for (const song of songs) {
+        queue.songs.push(song);
+      }
       clearIdleTimer(queue);
 
-      const shouldStart = queue.songs.length === 1 && !queue.nowPlaying;
-      if (shouldStart) {
+      if (wasEmpty) {
         await playNext(queue);
         if (queue.nowPlaying) {
           await sendNowPlaying(interaction.channel, queue.nowPlaying);
         }
+      } else if (songs.length > 1) {
+        await sendContextReply(context, `Queued ${songs.length} songs from the playlist.`);
       } else {
-        await sendContextReply(context, `Queued: **${song.title}**`);
+        await sendContextReply(context, `Queued: **${songs[0].title}**`);
       }
     } catch (error) {
       console.error("Unable to queue song:", error);
@@ -1154,8 +1237,8 @@ client.on(Events.MessageCreate, async (message) => {
       return;
     }
 
-    if (!isLikelyYouTubeVideoUrl(url)) {
-      await message.reply("Please provide a valid YouTube video URL.");
+    if (!isLikelyYouTubeVideoUrl(url) && !isLikelyYouTubePlaylistUrl(url)) {
+      await message.reply("Please provide a valid YouTube video or playlist URL.");
       return;
     }
 
@@ -1181,19 +1264,23 @@ client.on(Events.MessageCreate, async (message) => {
     }
 
     try {
-      const song = await resolveSong(url, message.author.username);
+      const songs = await resolveRequestedSongs(url, message.author.username);
       queue.textChannelId = message.channel.id;
-      queue.songs.push(song);
+      const wasEmpty = queue.songs.length === 0 && !queue.nowPlaying;
+      for (const song of songs) {
+        queue.songs.push(song);
+      }
       clearIdleTimer(queue);
 
-      const shouldStart = queue.songs.length === 1 && !queue.nowPlaying;
-      if (shouldStart) {
+      if (wasEmpty) {
         await playNext(queue);
         if (queue.nowPlaying) {
           await sendNowPlaying(message, queue.nowPlaying);
         }
+      } else if (songs.length > 1) {
+        await message.reply(`Queued ${songs.length} songs from the playlist.`);
       } else {
-        await message.reply(`Queued: **${song.title}**`);
+        await message.reply(`Queued: **${songs[0].title}**`);
       }
     } catch (error) {
       console.error("Unable to queue song:", error);
@@ -1301,4 +1388,7 @@ client.on(Events.MessageCreate, async (message) => {
   }
 });
 
-client.login(token);
+client.login(token).catch((error) => {
+  console.error("[LOGIN] Failed to log in:", error.message);
+  process.exit(1);
+});

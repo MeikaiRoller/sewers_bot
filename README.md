@@ -91,29 +91,71 @@ UI commands:
 - `HEALTHCHECK_VIDEO_ID`: video id used by `!health` probe
 - `COMMAND_DEDUPE_DELAY_MS`: delay before handling a command so overlapping instances can defer to the first responder; default is `450`
 
-## PM2 (optional)
+## PM2 (recommended for always-on hosting)
 
 PM2 is included in this project, so you do not need a global install.
 
-1. Install dependencies if you have not already:
+### 1. Install dependencies
 
-   ```bash
-   npm install
-   ```
+If you have not already done so:
 
-2. Start bot as a managed single instance:
+```bash
+npm install
+```
 
-   ```bash
-   npm run pm2:start
-   ```
+### 2. Start the bot with PM2
 
-3. Useful PM2 commands:
+Start it as a single managed instance:
 
-   ```bash
-   npm run pm2:logs
-   npm run pm2:restart
-   npm run pm2:stop
-   ```
+```bash
+npm run pm2:start
+```
+
+### 3. Enable PM2 to start on boot
+
+On Linux or similar systems, configure PM2 to start automatically after reboot:
+
+```bash
+npx pm2 startup
+```
+
+This prints a command you should run once, usually something like:
+
+```bash
+sudo env PATH=$PATH:/usr/bin /usr/lib/node_modules/pm2/bin/pm2 startup systemd -u <your-user> --hp /home/<your-user>
+```
+
+After that, save the current PM2 process list so it is restored after reboot:
+
+```bash
+npx pm2 save
+```
+
+### 4. Useful PM2 commands
+
+```bash
+npm run pm2:logs
+npm run pm2:restart
+npm run pm2:stop
+```
+
+### 5. Notes for Windows / self-starting behavior
+
+If you want the bot to restart automatically after a reboot on Windows, the easiest approach is:
+
+1. Install PM2 globally if desired, or keep using the local project version.
+2. Start the app with PM2.
+3. Use a Windows Task Scheduler task that launches PM2 or your startup script on logon.
+
+A simple Windows-friendly pattern is:
+
+```powershell
+npx pm2 resurrect
+```
+
+and then configure a Task Scheduler task to run that command at login.
+
+If you want the bot to keep running even when you close the terminal, PM2 is the correct tool to use. It will restart the bot if it crashes and can be configured to come back after reboot.
 
 ## Deploy On Render
 
