@@ -1,8 +1,8 @@
-require("dotenv").config();
-
 const fs = require("node:fs");
 const path = require("node:path");
+const readline = require("node:readline");
 const { spawn } = require("node:child_process");
+const dotenv = require("dotenv");
 
 const {
   ActivityType,
@@ -22,7 +22,34 @@ const {
   joinVoiceChannel,
 } = require("@discordjs/voice");
 const YTDlpWrap = require("yt-dlp-wrap").default;
-const ffmpegPath = require("ffmpeg-static");
+const ffmpegStaticPath = require("ffmpeg-static");
+
+const isPackaged = typeof process.pkg !== "undefined";
+const runtimeRoot = isPackaged
+  ? path.dirname(process.execPath)
+  : path.join(__dirname, "..");
+const dataRoot = isPackaged
+  ? path.join(process.env.APPDATA || runtimeRoot, "SewersBot")
+  : runtimeRoot;
+const envPath = path.join(runtimeRoot, ".env");
+
+dotenv.config({ path: envPath });
+
+function resolveFfmpegPath() {
+  if (!isPackaged) {
+    return ffmpegStaticPath;
+  }
+
+  const packagedFfmpegPath = path.join(runtimeRoot, "bin", process.platform === "win32" ? "ffmpeg.exe" : "ffmpeg");
+
+  if (fs.existsSync(packagedFfmpegPath)) {
+    return packagedFfmpegPath;
+  }
+
+  return ffmpegStaticPath;
+}
+
+const ffmpegPath = resolveFfmpegPath();
 
 if (ffmpegPath) {
   process.env.FFMPEG_PATH = ffmpegPath;
@@ -30,8 +57,8 @@ if (ffmpegPath) {
 
 const token = process.env.DISCORD_TOKEN;
 const prefix = process.env.PREFIX || "!";
-const instanceLockPath = path.join(__dirname, "..", ".bot-instance.lock");
-const ytDlpStatePath = path.join(__dirname, "..", ".cache", "yt-dlp-state.json");
+const instanceLockPath = path.join(dataRoot, ".bot-instance.lock");
+const ytDlpStatePath = path.join(dataRoot, ".cache", "yt-dlp-state.json");
 
 const ytDlpAutoUpdateHours = Number.parseInt(process.env.YTDLP_AUTO_UPDATE_HOURS || "24", 10);
 const streamRetryCount = Number.parseInt(process.env.STREAM_RETRY_COUNT || "2", 10);
@@ -52,6 +79,7 @@ function toPositiveInt(value, fallback) {
 const safeYtDlpAutoUpdateHours = toPositiveInt(ytDlpAutoUpdateHours, 24);
 const safeStreamRetryCount = toPositiveInt(streamRetryCount, 2);
 const safeCommandDedupeDelayMs = toPositiveInt(commandDedupeDelayMs, 450);
+const uiEnabled = process.argv.includes("--ui") || process.env.BOT_UI === "1";
 
 function sleep(ms) {
   return new Promise((resolve) => {
@@ -85,6 +113,8 @@ function releaseInstanceLock() {
 }
 
 function acquireInstanceLock() {
+  fs.mkdirSync(path.dirname(instanceLockPath), { recursive: true });
+
   if (fs.existsSync(instanceLockPath)) {
     try {
       const existing = fs.readFileSync(instanceLockPath, "utf8").trim();
@@ -156,11 +186,13 @@ const client = new Client({
 
 const queues = new Map();
 const ytDlpBinaryName = process.platform === "win32" ? "yt-dlp.exe" : "yt-dlp";
-const ytDlpPath = path.join(__dirname, "..", "bin", ytDlpBinaryName);
+const ytDlpPath = path.join(dataRoot, "bin", ytDlpBinaryName);
+const ytDlpBundledPath = path.join(runtimeRoot, "bin", ytDlpBinaryName);
 const ytDlp = new YTDlpWrap(ytDlpPath);
 
 let ytDlpReadyPromise = null;
 let currentPresenceKey = "";
+let isShuttingDown = false;
 
 function setPresence(activityText, type = ActivityType.Playing, status = "online") {
   if (!client.user) return;
@@ -269,6 +301,94 @@ function getGuildNameById(guildId) {
   return client.guilds.cache.get(guildId)?.name || guildId;
 }
 
+function getRuntimeStatusText() {
+  const activeQueues = [...queues.values()].filter(
+    (queue) => queue.nowPlaying || queue.songs.length > 0
+  );
+
+  return [
+    `pid: ${process.pid}`,
+    `uptime_s: ${Math.floor(process.uptime())}`,
+    `guilds: ${client.guilds.cache.size}`,
+    `connected_voice_queues: ${queues.size}`,
+    `active_playback_queues: ${activeQueues.length}`,
+    `presence: ${currentPresenceKey || "none"}`,
+  ].join("\n");
+}
+
+async function shutdownBot() {
+  if (isShuttingDown) return;
+  isShuttingDown = true;
+
+  for (const queue of queues.values()) {
+    clearIdleTimer(queue);
+    stopActiveTranscoder(queue);
+    queue.player.stop();
+    queue.connection.destroy();
+  }
+
+  queues.clear();
+
+  try {
+    if (client.isReady()) {
+      await client.destroy();
+    }
+  } catch (error) {
+    console.warn("[SHUTDOWN] Discord client cleanup error:", error.message);
+  }
+
+  releaseInstanceLock();
+}
+
+function startConsoleUi() {
+  if (!uiEnabled) return;
+
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout,
+    prompt: "sewers-bot> ",
+  });
+
+  console.log("[UI] Console UI enabled.");
+  console.log("[UI] Commands: help, status, queues, exit");
+  rl.prompt();
+
+  rl.on("line", async (rawInput) => {
+    const command = rawInput.trim().toLowerCase();
+
+    if (command === "help") {
+      console.log("Commands:\n  help\n  status\n  queues\n  exit");
+    } else if (command === "status") {
+      console.log(getRuntimeStatusText());
+    } else if (command === "queues") {
+      if (!queues.size) {
+        console.log("No active voice queues.");
+      } else {
+        for (const queue of queues.values()) {
+          const current = queue.nowPlaying?.title || "none";
+          console.log(
+            `${queue.guildName}: now_playing=${current} queued=${queue.songs.length}`
+          );
+        }
+      }
+    } else if (command === "exit") {
+      console.log("[UI] Shutting down bot...");
+      rl.close();
+      await shutdownBot();
+      process.exit(0);
+      return;
+    } else if (command.length > 0) {
+      console.log(`Unknown command: ${command}`);
+    }
+
+    rl.prompt();
+  });
+
+  rl.on("close", () => {
+    shutdownBot().finally(() => process.exit(0));
+  });
+}
+
 async function ensureYtDlpReady() {
   if (ytDlpReadyPromise) {
     return ytDlpReadyPromise;
@@ -277,7 +397,14 @@ async function ensureYtDlpReady() {
   ytDlpReadyPromise = (async () => {
     if (!fs.existsSync(ytDlpPath)) {
       fs.mkdirSync(path.dirname(ytDlpPath), { recursive: true });
-      await downloadOrUpdateYtDlp("missing-binary");
+
+      if (isPackaged && fs.existsSync(ytDlpBundledPath)) {
+        fs.copyFileSync(ytDlpBundledPath, ytDlpPath);
+        console.log(`[YTDLP] Seeded bundled binary at ${ytDlpPath}`);
+      } else {
+        await downloadOrUpdateYtDlp("missing-binary");
+      }
+
       console.log(`[YTDLP] Binary ready at ${ytDlpPath}`);
       return;
     }
@@ -774,6 +901,7 @@ async function sendNowPlaying(message, song) {
 client.once(Events.ClientReady, () => {
   console.log(`Logged in as ${client.user.tag}`);
   setPresence("Starting up", ActivityType.Playing, "idle");
+  startConsoleUi();
   ensureYtDlpReady().catch((error) => {
     console.error("[YTDLP] Failed to prepare yt-dlp binary:", error);
   }).finally(() => {

@@ -3,10 +3,13 @@
   "version": "1.0.0",
   "description": "Discord music bot with YouTube link playback",
   "main": "src/index.js",
+  "bin": "src/index.js",
   "type": "commonjs",
   "scripts": {
     "start": "node src/index.js",
+    "start:ui": "node src/index.js --ui",
     "dev": "nodemon src/index.js",
+    "build:exe": "node scripts/build-exe.cjs",
     "pm2:start": "npx pm2 start ecosystem.config.cjs --only sewers-bot",
     "pm2:stop": "npx pm2 stop sewers-bot",
     "pm2:restart": "npx pm2 restart sewers-bot",
@@ -30,6 +33,12 @@
   },
   "devDependencies": {
     "nodemon": "^3.1.4",
+    "pkg": "^5.8.1",
     "pm2": "^7.0.1"
+  },
+  "pkg": {
+    "assets": [
+      "src/**/*"
+    ]
   }
 }

@@ -60,6 +60,19 @@ For development (auto-reload):
 npm run dev
 ```
 
+For local console UI mode (same bot + interactive terminal commands):
+
+```bash
+npm run start:ui
+```
+
+UI commands:
+
+- `help`
+- `status`
+- `queues`
+- `exit`
+
 ## Commands
 
 - `!play <youtube_url>`
@@ -116,6 +129,35 @@ Notes:
 
 - Use a **Worker** service (not Web Service) because the bot does not serve HTTP.
 - Render restarts workers automatically if the process exits.
+
+## Build Windows EXE
+
+This creates a distributable Windows folder in `dist/` containing:
+
+- `sewers-bot.exe`
+- `bin/ffmpeg.exe`
+- `bin/yt-dlp.exe` (if present in project `bin/`)
+- `run-bot.bat` (normal)
+- `run-bot-ui.bat` (console UI mode)
+- `run-bot-watchdog.bat` (auto-restart on crash)
+- `run-bot-watchdog-ui.bat` (auto-restart on crash with UI)
+
+Steps:
+
+```bash
+npm install
+npm run build:exe
+```
+
+Then:
+
+1. Open `dist/.env.example`, copy it to `dist/.env`, and set `DISCORD_TOKEN`.
+2. Run `dist/run-bot.bat` or `dist/run-bot-ui.bat`.
+
+Packaging notes:
+
+- In EXE mode, bot state/cache are stored in `%APPDATA%/SewersBot`.
+- If `bin/yt-dlp.exe` is not bundled, the bot downloads it on first run.
 
 ## Notes
 
